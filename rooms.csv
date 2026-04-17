@@ -1,0 +1,10 @@
+RoomID,Capacity,Type
+R101,120,Core
+R102,100,Core
+R103,90,Core
+R104,80,Core
+R105,70,Core
+
+Lab201,60,Elective
+Lab202,50,Elective
+Lab203,40,Elective
