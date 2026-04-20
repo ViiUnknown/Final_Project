@@ -23,13 +23,14 @@ public class Scheduler {
             "Tue-Fri 3:30-5:00"
     };
 
+    // slot -> used room ids
     Map<Integer, Set<String>> usedRooms = new HashMap<>();
-    Map<Integer, Integer> slotLoad = new HashMap<>();
 
     long startTime;
-    long TIME_LIMIT = 15000; // 15 sec
+    long TIME_LIMIT = 15000; // 15 seconds
 
-    public Scheduler(List<Course> courses, List<Classroom> rooms,
+    public Scheduler(List<Course> courses,
+                     List<Classroom> rooms,
                      InstructorAvailability availability) {
 
         this.courses = courses;
@@ -47,30 +48,10 @@ public class Scheduler {
 
         for (int i = 0; i < TOTAL_SLOTS; i++) {
             usedRooms.put(i, new HashSet<>());
-            slotLoad.put(i, 0);
         }
 
-        // Sort rooms biggest first
+        // sort rooms biggest first
         rooms.sort((a, b) -> b.capacity - a.capacity);
-
-        // 🔥 FULL HEURISTIC (MRV + Degree + Enrollment)
-        courses.sort((a, b) -> {
-
-            int aSlots = availability.getAvailableSlots(a.instructor).size();
-            int bSlots = availability.getAvailableSlots(b.instructor).size();
-
-            // 1. MRV (fewer slots first)
-            if (aSlots != bSlots)
-                return aSlots - bSlots;
-
-            // 2. Degree (more conflicts first)
-            int degDiff = graph.get(b).size() - graph.get(a).size();
-            if (degDiff != 0)
-                return degDiff;
-
-            // 3. Enrollment (larger first)
-            return b.enrollment - a.enrollment;
-        });
     }
 
     // ---------------- GRAPH ----------------
@@ -87,14 +68,18 @@ public class Scheduler {
 
                 boolean conflict = false;
 
+                // same program + same year + both core
                 if (a.program.equals(b.program)
                         && a.year == b.year
                         && a.type.equalsIgnoreCase("Core")
-                        && b.type.equalsIgnoreCase("Core"))
+                        && b.type.equalsIgnoreCase("Core")) {
                     conflict = true;
+                }
 
-                if (a.instructor.equals(b.instructor))
+                // same instructor
+                if (a.instructor.equals(b.instructor)) {
                     conflict = true;
+                }
 
                 if (conflict) {
                     graph.get(a).add(b);
@@ -106,32 +91,27 @@ public class Scheduler {
 
     // ---------------- SOLVER ----------------
     public boolean solve() {
-        return backtrack(0);
+        return backtrack();
     }
 
-    private boolean backtrack(int index) {
+    private boolean backtrack() {
 
         if (System.currentTimeMillis() - startTime > TIME_LIMIT)
             return false;
 
-        if (index == courses.size())
-            return true;
+        Course course = selectNextCourse();
 
-        Course course = courses.get(index);
+        if (course == null)
+            return true; // all assigned
 
         List<Integer> slots =
                 new ArrayList<>(availability.getAvailableSlots(course.instructor));
 
-        // 🔥 SLOT HEURISTIC (least load + most room options)
+        // Least constraining slot heuristic
         slots.sort((s1, s2) -> {
-
-            int loadDiff = slotLoad.get(s1) - slotLoad.get(s2);
-            if (loadDiff != 0) return loadDiff;
-
-            int r1 = countPossibleRooms(course, s1);
-            int r2 = countPossibleRooms(course, s2);
-
-            return r2 - r1;
+            int c1 = countPossibleRooms(course, s1);
+            int c2 = countPossibleRooms(course, s2);
+            return c2 - c1; // more room choices first
         });
 
         for (int slot : slots) {
@@ -139,52 +119,117 @@ public class Scheduler {
             if (!isSlotValid(course, slot))
                 continue;
 
-            int possibleRooms = countPossibleRooms(course, slot);
+            List<Classroom> candidates = getValidRooms(course, slot);
 
-            if (slotLoad.get(slot) >= possibleRooms)
-                continue;
-
-            for (Classroom room : rooms) {
-
-                if (!isRoomValid(course, room, slot))
-                    continue;
+            for (Classroom room : candidates) {
 
                 // assign
                 course.timeSlot = slot;
                 course.room = room.id;
-
                 usedRooms.get(slot).add(room.id);
-                slotLoad.put(slot, slotLoad.get(slot) + 1);
 
-                if (backtrack(index + 1))
+                // forward checking
+                if (forwardCheck() && backtrack())
                     return true;
 
                 // undo
+                usedRooms.get(slot).remove(room.id);
                 course.timeSlot = -1;
                 course.room = null;
-
-                usedRooms.get(slot).remove(room.id);
-                slotLoad.put(slot, slotLoad.get(slot) - 1);
             }
         }
 
         return false;
     }
 
-    // ---------------- PRUNING ----------------
+    // ---------------- DYNAMIC MRV ----------------
+    private Course selectNextCourse() {
+
+        Course best = null;
+        int bestDomain = Integer.MAX_VALUE;
+        int bestDegree = -1;
+        int bestEnroll = -1;
+
+        for (Course c : courses) {
+
+            if (c.timeSlot != -1)
+                continue;
+
+            int domain = countLegalMoves(c);
+            int degree = graph.get(c).size();
+
+            if (domain < bestDomain ||
+               (domain == bestDomain && degree > bestDegree) ||
+               (domain == bestDomain && degree == bestDegree
+                        && c.enrollment > bestEnroll)) {
+
+                best = c;
+                bestDomain = domain;
+                bestDegree = degree;
+                bestEnroll = c.enrollment;
+            }
+        }
+
+        return best;
+    }
+
+    // ---------------- FORWARD CHECK ----------------
+    private boolean forwardCheck() {
+
+        for (Course c : courses) {
+
+            if (c.timeSlot != -1)
+                continue;
+
+            if (countLegalMoves(c) == 0)
+                return false;
+        }
+
+        return true;
+    }
+
+    // ---------------- DOMAIN SIZE ----------------
+    private int countLegalMoves(Course c) {
+
+        int count = 0;
+
+        for (int slot : availability.getAvailableSlots(c.instructor)) {
+
+            if (!isSlotValid(c, slot))
+                continue;
+
+            count += countPossibleRooms(c, slot);
+
+            if (count > 0)
+                return count; // enough to know possible
+        }
+
+        return count;
+    }
+
+    // ---------------- ROOM HELPERS ----------------
     private int countPossibleRooms(Course course, int slot) {
 
         int count = 0;
 
-        for (Classroom r : rooms) {
-            if (!usedRooms.get(slot).contains(r.id)
-                    && r.type.equalsIgnoreCase(course.type)
-                    && r.capacity >= course.enrollment) {
+        for (Classroom room : rooms) {
+            if (isRoomValid(course, room, slot))
                 count++;
-            }
         }
 
         return count;
+    }
+
+    private List<Classroom> getValidRooms(Course course, int slot) {
+
+        List<Classroom> list = new ArrayList<>();
+
+        for (Classroom room : rooms) {
+            if (isRoomValid(course, room, slot))
+                list.add(room);
+        }
+
+        return list;
     }
 
     // ---------------- VALIDATION ----------------
@@ -198,15 +243,17 @@ public class Scheduler {
         return true;
     }
 
-    private boolean isRoomValid(Course course, Classroom room, int slot) {
+    private boolean isRoomValid(Course course,
+                                Classroom room,
+                                int slot) {
 
         if (usedRooms.get(slot).contains(room.id))
             return false;
 
-        if (room.capacity < course.enrollment)
+        if (!room.type.equalsIgnoreCase(course.type))
             return false;
 
-        if (!room.type.equalsIgnoreCase(course.type))
+        if (room.capacity < course.enrollment)
             return false;
 
         return true;

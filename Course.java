@@ -5,7 +5,6 @@ public class Course {
     int year;
     String type;
     String instructor;
-    int semester;
     int enrollment;
 
     int timeSlot = -1;
@@ -17,7 +16,6 @@ public class Course {
         this.year = year;
         this.type = type;
         this.instructor = instructor;
-        this.semester = semester;
         this.enrollment = enrollment;
     }
 }
